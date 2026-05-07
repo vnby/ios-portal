@@ -51,12 +51,20 @@ source .venv/bin/activate
 uv pip install mobilerun
 
 mobilerun configure
+
+# Return to this repository before running the Xcode commands below.
+cd ..
 ```
 
-Alternatively, configure your LLM provider with environment variables:
+Alternatively, configure your LLM provider with environment variables and pass
+the matching provider/model flags when you run Mobilerun. For example, with
+OpenAI:
 
 ```bash
 export OPENAI_API_KEY=your-api-key
+
+# Later, add these flags to the `mobilerun run` examples:
+#   --provider OpenAIResponses --model gpt-5.4
 ```
 
 ### 2. Prepare Xcode signing
@@ -156,7 +164,14 @@ xcrun simctl list devices available
 ./simulator.sh "iPhone 16 Pro"
 ```
 
-Verify and run Mobilerun:
+The simulator prints the port it bound, for example:
+
+```text
+Portal server listening on port 6643
+```
+
+Use that printed port in the health check and explicit `--device` URL. If the
+printed port is `6644`, replace `6643` with `6644` below.
 
 ```bash
 curl http://127.0.0.1:6643/device/date
@@ -165,6 +180,8 @@ cd mobilerun-ios-test
 source .venv/bin/activate
 mobilerun run "take a screenshot" --ios --device http://127.0.0.1:6643
 ```
+
+You can also omit `--device` and let Mobilerun scan `127.0.0.1:6643-6652`.
 
 ### Troubleshooting
 
