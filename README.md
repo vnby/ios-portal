@@ -438,6 +438,7 @@ requests.post('http://127.0.0.1:6643/gestures/tap',
 After the portal health check succeeds, use Mobilerun directly:
 
 ```bash
+cd mobilerun-ios-test
 source .venv/bin/activate
 
 mobilerun run "Open Settings and check Wi-Fi" \
@@ -460,16 +461,14 @@ mobilerun run "Open Instagram and click the search icon" \
 ```python
 import asyncio
 
-from mobilerun import DeviceConfig, MobileAgent, MobileConfig
+from mobilerun import MobileAgent
+from mobilerun.config_manager import ConfigLoader
 
 
 async def main() -> None:
-    config = MobileConfig(
-        device=DeviceConfig(
-            platform="ios",
-            serial="http://127.0.0.1:6643",
-        )
-    )
+    config = ConfigLoader.load()
+    config.device.platform = "ios"
+    config.device.serial = "http://127.0.0.1:6643"
 
     agent = MobileAgent(
         goal="Open Settings and check Wi-Fi",
