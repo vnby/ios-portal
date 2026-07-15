@@ -17,6 +17,7 @@ Use it to start, verify, and stop the local `vnby/ios-portal` flow without askin
 | Mac portal URL | `http://127.0.0.1:16643` |
 | Launchd runner label | `local.ios-portal.runner` |
 | Launchd iproxy label | `local.ios-portal.iproxy` |
+| Last end-to-end UI Automation verification | `2026-07-15` |
 
 The iPhone 7 is expected to stay connected. UI Automation has been enabled before, but do not assume an unattended device can approve a new `Enable UI Automation` prompt. Use Xcode 26.2 explicitly; do not rely on the default `xcode-select` path because this Mac may also have another Xcode installed.
 
@@ -49,6 +50,40 @@ lsof -nP -iTCP:16643 -sTCP:LISTEN
 ```
 
 If the portal is not running and the device is unattended, stop here. Do not start it merely to reopen Expo Go; use the recovery procedure below.
+
+## Reconfirm UI Automation End To End
+
+Do not treat the iOS toggle, a paired USB connection, or a running `xcodebuild` process as sufficient proof. Access is confirmed only after the portal performs an application launch, returns an accessibility tree, and captures the device screen.
+
+Run this while the portal is already healthy, or immediately after Alvin physically approves any iPhone prompt during portal startup:
+
+```bash
+BASE=http://127.0.0.1:16643
+
+curl -fsS "$BASE/device/date"
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -d '{"bundleIdentifier":"com.alvin.mobilerun-ios-portal"}' \
+  "$BASE/inputs/launch"
+
+curl -fsS "$BASE/state" -o /tmp/ios-portal-ui-automation-state.json
+curl -fsS "$BASE/vision/screenshot" -o /tmp/ios-portal-ui-automation-confirmed.png
+
+file /tmp/ios-portal-ui-automation-state.json
+file /tmp/ios-portal-ui-automation-confirmed.png
+```
+
+UI Automation is confirmed only when all of these are true:
+
+- `/device/date` returns JSON.
+- `/inputs/launch` reports that it opened `com.alvin.mobilerun-ios-portal`.
+- `/state` contains the Droidrun Portal accessibility tree and `Welcome to Droidrun!`.
+- The screenshot is a valid `750 x 1334` PNG showing the Droidrun Portal screen.
+
+This complete check passed on the physical iPhone 7 on 2026-07-15. Afterward, Expo Go was restored with the DVT recovery command in this document and the portal screenshot endpoint captured the signed-in Okami Home screen.
+
+Important: `/vision/screenshot` captures the actual foreground screen, but `/state` is scoped to the Droidrun Portal target application and may continue reporting its tree while Expo Go is in front. Do not interpret that difference as failed UI Automation or a failed Expo launch.
 
 ## Recover Expo Go Without Physical Access
 
