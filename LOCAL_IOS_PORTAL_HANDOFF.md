@@ -17,7 +17,7 @@ Use it to start, verify, and stop the local `vnby/ios-portal` flow without askin
 | Mac portal URL | `http://127.0.0.1:16643` |
 | Launchd runner label | `local.ios-portal.runner` |
 | Launchd iproxy label | `local.ios-portal.iproxy` |
-| Last end-to-end UI Automation verification | `2026-07-15` |
+| Last end-to-end UI Automation verification | `2026-07-18` |
 
 The iPhone 7 is expected to stay connected. UI Automation has been enabled before, but do not assume an unattended device can approve a new `Enable UI Automation` prompt. Use Xcode 26.2 explicitly; do not rely on the default `xcode-select` path because this Mac may also have another Xcode installed.
 
@@ -51,6 +51,70 @@ lsof -nP -iTCP:16643 -sTCP:LISTEN
 
 If the portal is not running and the device is unattended, stop here. Do not start it merely to reopen Expo Go; use the recovery procedure below.
 
+## Provisioning Profile Expiry And Renewal
+
+This portal currently uses Alvin's free Apple **Personal Team** (`LR636MVRF3`). Apple fixes Personal Team App IDs, device registrations, and provisioning profiles to a **7-day lifetime**. A profile cannot be extended indefinitely; the app and XCTest runner must be reprovisioned, rebuilt, and reinstalled after expiration. A paid Apple Developer Program team normally reduces this maintenance to roughly annual renewal, but its development profiles still expire.
+
+Apple references:
+
+- [Developer account overview](https://developer.apple.com/help/account/basics/about-your-developer-account/)
+- [Inside Code Signing: Provisioning Profiles](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)
+
+Do not mistake an expired profile for a broken USB connection or a disabled UI Automation toggle. Common expiry symptoms include:
+
+- `No Accounts: Add a new account in Accounts settings.` even though Xcode's Apple Accounts screen still lists the account.
+- `No profiles for 'com.alvin.mobilerun-ios-portal' were found`.
+- `No profiles for 'com.alvin.mobilerun-ios-portalUITests.xctrunner' were found`.
+- `Provisioning profile ... doesn't include the currently selected device`.
+- `A valid provisioning profile for this executable was not found` while installing `Droidrun-Runner`.
+
+Before renewal, follow the unattended-device safety rule above and confirm that Alvin can touch the iPhone. The rebuild or XCTest launch can show an `Enable UI Automation` prompt.
+
+### Inspect The Current Expiration Dates
+
+Xcode 26 stores its current profiles under `~/Library/Developer/Xcode/UserData/Provisioning Profiles`. This command prints the portal-related application identifiers and expiration dates without changing them:
+
+```bash
+for profile_path in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.mobileprovision; do
+  profile_plist=$(mktemp)
+  if ! security cms -D -i "$profile_path" > "$profile_plist" 2>/dev/null; then
+    rm "$profile_plist"
+    continue
+  fi
+  application_id=$(/usr/libexec/PlistBuddy \
+    -c 'Print :Entitlements:application-identifier' \
+    "$profile_plist" 2>/dev/null || true)
+
+  if [[ "$application_id" == *mobilerun-ios-portal* ]]; then
+    printf '%s\n' "$application_id"
+    /usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$profile_plist"
+  fi
+
+  rm "$profile_plist"
+done
+```
+
+There should be three current profiles:
+
+- `LR636MVRF3.com.alvin.mobilerun-ios-portal`
+- `LR636MVRF3.com.alvin.mobilerun-ios-portalUITests`
+- `LR636MVRF3.com.alvin.mobilerun-ios-portalUITests.xctrunner`
+
+### Renew Expired Personal Team Profiles
+
+The following recovery was verified on 2026-07-18:
+
+1. Open `/Applications/Xcode_26.2.app`, then open **Settings > Apple Accounts**.
+2. Select `Muhammad Alvin Abyan` (`alvin_sfb@yahoo.com`), select **Personal Team**, and click **Download Manual Profiles**.
+3. Open `droidrun-ios-portal.xcodeproj` in Xcode 26.2. Confirm that both **Droidrun Portal** and **Droidrun Server** use `Muhammad Alvin Abyan (Personal Team)` with automatic signing.
+4. If Xcode asks to trust the `FlyingFoxMacros` package, obtain Alvin's explicit approval before clicking **Trust & Enable**. The normal background command uses `-skipMacroValidation`, but the Xcode GUI needs the package enabled to perform this one-time renewal build.
+5. Set the run destination to **Alvin's iPhone 7**, choose **Product > Test**, and approve any prompt on the iPhone. A GUI test build is important because it generates the third `...UITests.xctrunner` profile; downloading manual profiles alone may generate only the app and UI-test target profiles.
+6. Re-run the expiration inspection command and confirm that all three profiles now have future dates.
+7. Stop the GUI test. If a GUI-debug test made `/device/date` work but caused `/state` or `/vision/screenshot` to hang, do not treat that as a device failure; restart with the background launchd runner in **Start The Portal** below.
+8. Run the complete **Reconfirm UI Automation End To End** check. Renewal is not complete until launch, accessibility-tree, and screenshot checks all pass.
+
+On 2026-07-18, the renewed Personal Team profiles were valid through 2026-07-25. Expect the same seven-day cycle unless the project is moved to a paid development team.
+
 ## Reconfirm UI Automation End To End
 
 Do not treat the iOS toggle, a paired USB connection, or a running `xcodebuild` process as sufficient proof. Access is confirmed only after the portal performs an application launch, returns an accessibility tree, and captures the device screen.
@@ -81,7 +145,7 @@ UI Automation is confirmed only when all of these are true:
 - `/state` contains the Droidrun Portal accessibility tree and `Welcome to Droidrun!`.
 - The screenshot is a valid `750 x 1334` PNG showing the Droidrun Portal screen.
 
-This complete check passed on the physical iPhone 7 on 2026-07-15. Afterward, Expo Go was restored with the DVT recovery command in this document and the portal screenshot endpoint captured the signed-in Okami Home screen.
+This complete check passed on the physical iPhone 7 on 2026-07-18 after renewing all three Personal Team profiles. After the earlier 2026-07-15 verification, Expo Go was restored with the DVT recovery command in this document and the portal screenshot endpoint captured the signed-in Okami Home screen.
 
 Important: `/vision/screenshot` captures the actual foreground screen, but `/state` is scoped to the Droidrun Portal target application and may continue reporting its tree while Expo Go is in front. Do not interpret that difference as failed UI Automation or a failed Expo launch.
 
@@ -317,7 +381,7 @@ If a foreground `xcodebuild test` is running, stop it with `Ctrl-C`. Xcode may r
 ## Troubleshooting
 
 - `Macro "Plugins" ... must be enabled`: rerun with `-skipMacroValidation`.
-- Provisioning profile errors: ensure Alvin is logged into the Apple Account in `Xcode_26.2.app`, then use `-allowProvisioningUpdates -allowProvisioningDeviceRegistration`.
+- Provisioning profile errors: follow **Provisioning Profile Expiry And Renewal** above. Personal Team profiles expire after seven days, and `-allowProvisioningUpdates -allowProvisioningDeviceRegistration` cannot recover every missing XCTest runner profile from the command line.
 - `Unknown build action 'Server/DroidrunPortalServer/testLoop'`: the `-only-testing` argument was split incorrectly. Quote the full argument exactly as `"-only-testing:Droidrun Server/DroidrunPortalServer/testLoop"`.
 - `curl: Failed to connect` or `iproxy` says `Connection refused`: the XCTest server is not ready or has stopped. Check `/tmp/ios-portal-device-xcodebuild.err` and `/tmp/ios-portal-device-xcodebuild.out`, then restart both launchd jobs.
 - Port conflict on `16643`: stop any old forwarder with `lsof -tiTCP:16643 -sTCP:LISTEN | xargs -r kill`.
