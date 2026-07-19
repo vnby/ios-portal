@@ -102,6 +102,19 @@ file "$SHOT"
 
 On this iPhone the screenshot must be a valid `750 x 1334` PNG. A USB connection, a visible app, `/health`, or `/device/date` by itself is insufficient proof. HTTP 409 means another operation is active; wait for it. HTTP 503 means XCTest could not perform the operation; do not reinterpret it as success.
 
+For Expo Go flow tests, use a fresh launch before opening the project deep link
+when an existing JavaScript session is stale or does not accept input:
+
+```bash
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -d '{"bundleIdentifier":"host.exp.Exponent","fresh":true}' \
+  "$BASE/inputs/launch" | jq .
+```
+
+The default remains resumptive activation. Use `fresh: true` only at an explicit
+test boundary; it intentionally asks XCTest to replace the existing app process.
+
 ## Supervisor behavior and recovery
 
 The service has one owner and one recovery loop:

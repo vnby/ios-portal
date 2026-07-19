@@ -4,6 +4,7 @@ import Foundation
 
 struct LaunchAppBody: Decodable {
     let bundleIdentifier: String
+    let fresh: Bool?
 }
 
 struct LaunchAppResponse: Encodable {
@@ -233,7 +234,10 @@ struct DroidrunPortalHandler {
     func launchApp(_ request: HTTPRequest) async -> HTTPResponse {
         await executeOperation("launch") {
             let body = try await decode(LaunchAppBody.self, from: request)
-            try await DroidrunPortalTools.shared.openApp(bundleIdentifier: body.bundleIdentifier)
+            try await DroidrunPortalTools.shared.openApp(
+                bundleIdentifier: body.bundleIdentifier,
+                fresh: body.fresh == true
+            )
             return try jsonResponse(LaunchAppResponse(message: "opened \(body.bundleIdentifier)"))
         }
     }

@@ -89,9 +89,15 @@ Launches an application by bundle identifier.
 **Request Body:**
 ```json
 {
-  "bundleIdentifier": "com.example.app"
+  "bundleIdentifier": "com.example.app",
+  "fresh": false
 }
 ```
+
+`fresh` is optional and defaults to `false`, which resumes or starts the app
+without first terminating it. Set it to `true` when a flow requires a clean app
+process, such as recovering a stale Expo Go JavaScript session. Fresh launch is
+deliberately opt-in because forced termination is less reliable on older devices.
 
 **Response:**
 ```json

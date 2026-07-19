@@ -245,9 +245,13 @@ final class DroidrunPortalTools {
 
     // MARK: - App management
 
-    func openApp(bundleIdentifier: String) throws {
+    func openApp(bundleIdentifier: String, fresh: Bool = false) throws {
         if bundleIdentifier == self.bundleIdentifier, app != nil {
-            app?.activate()
+            if fresh, bundleIdentifier != "com.apple.springboard" {
+                app?.launch()
+            } else {
+                app?.activate()
+            }
             guard app?.wait(for: .runningForeground, timeout: 10) == true else {
                 throw Error.invalidTool(
                     name: "openApp",
@@ -259,10 +263,16 @@ final class DroidrunPortalTools {
 
         let app = XCUIApplication(bundleIdentifier: bundleIdentifier)
 
-        // activate() starts an app that is not running without first forcing a
-        // termination.  Forced termination is unreliable on older physical
-        // devices and records an XCTest failure that kills the portal server.
-        app.activate()
+        if fresh, bundleIdentifier != "com.apple.springboard" {
+            // Fresh launch is opt-in because XCTest terminates an existing app
+            // first. This is useful for stale React Native/Expo sessions, but
+            // older physical devices may not tolerate it as a default.
+            app.launch()
+        } else {
+            // activate() starts an app that is not running without first forcing
+            // a termination. Keep this as the safe resumptive default.
+            app.activate()
+        }
 
         guard app.wait(for: .runningForeground, timeout: 10) else {
             throw Error.invalidTool(
@@ -503,9 +513,18 @@ final class DroidrunPortalTools {
         let verificationDeadline = CFAbsoluteTimeGetCurrent() + 3
         var valueAfterTyping = focused.value as? String ?? ""
         while CFAbsoluteTimeGetCurrent() < verificationDeadline {
-            let verified = clear
-                ? valueAfterTyping == text
-                : (text.isEmpty || (valueAfterTyping != valueBeforeTyping && valueAfterTyping.contains(text)))
+            let verified: Bool
+            if focused.elementType == .secureTextField {
+                // XCTest exposes secure values as one bullet per character, so
+                // plaintext equality/containment can never succeed.
+                verified = clear
+                    ? valueAfterTyping.count == text.count
+                    : (text.isEmpty || valueAfterTyping.count >= valueBeforeTyping.count + text.count)
+            } else {
+                verified = clear
+                    ? valueAfterTyping == text
+                    : (text.isEmpty || (valueAfterTyping != valueBeforeTyping && valueAfterTyping.contains(text)))
+            }
             if verified {
                 return
             }
