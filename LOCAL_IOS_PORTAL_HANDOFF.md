@@ -1,404 +1,201 @@
-# Local iOS Portal Handoff
+# Physical iPhone 7 Portal Handoff
 
-This document is for LLM agents working on Alvin's Mac with the iPhone 7 connected over USB.
-Use it to start, verify, and stop the local `vnby/ios-portal` flow without asking for the same setup details again.
+This is the authoritative runbook for automated UI testing on Alvin's physically connected iPhone 7. The supported path is deliberately narrow: Xcode 26.2 runs this repository's signed XCTest bundle on the named USB device, `iproxy` forwards one fixed port, and one launchd supervisor owns both processes.
 
-## Fixed Local Assumptions
+## Fixed configuration
 
-| Item | Value |
+| Item | Required value |
 | --- | --- |
-| Repo path | `/Users/alvin/Documents/Personal/Dev/mobile/ios-portal` |
-| Required Xcode | `/Applications/Xcode_26.2.app/Contents/Developer` |
-| Connected device | `Alvin's iPhone 7`, iOS `15.8.8` |
-| Device UDID | `52181a4873864c3323d52b4bc0c87d3068617f31` |
-| Portal app bundle ID | `com.alvin.mobilerun-ios-portal` |
-| Device server port | `6643` |
-| Mac forwarded port | `16643` |
-| Mac portal URL | `http://127.0.0.1:16643` |
-| Launchd runner label | `local.ios-portal.runner` |
-| Launchd iproxy label | `local.ios-portal.iproxy` |
-| Last end-to-end UI Automation verification | `2026-07-18` |
+| Repository | `/Users/alvin/Documents/Personal/Dev/mobile/ios-portal` |
+| Xcode | `/Applications/Xcode_26.2.app/Contents/Developer` |
+| Device | `Alvin's iPhone 7`, iOS 15.8.8 |
+| UDID | `52181a4873864c3323d52b4bc0c87d3068617f31` |
+| Portal app | `com.alvin.mobilerun-ios-portal` |
+| Device port | `6643` |
+| Mac port | `16643` |
+| Base URL | `http://127.0.0.1:16643` |
+| LaunchAgent | `com.alvin.ios-portal.supervisor` |
+| Status | `~/Library/Application Support/ios-portal/status.json` |
+| Logs | `~/Library/Logs/ios-portal/` |
+| Soak samples | `~/Library/Logs/ios-portal/health-samples.jsonl` |
 
-The iPhone 7 is expected to stay connected. UI Automation has been enabled before, but do not assume an unattended device can approve a new `Enable UI Automation` prompt. Use Xcode 26.2 explicitly; do not rely on the default `xcode-select` path because this Mac may also have another Xcode installed.
+Do not substitute the default Xcode, a simulator, network pairing, WebDriverAgent, Shortcuts, DVT, `pymobiledevice3`, raw screenshot tools, or another launch mechanism. They are not portal recovery paths and cannot count as successful UI Automation. The API also does not fabricate empty accessibility trees, guessed screen sizes, or success responses when XCTest cannot reach the target app.
 
-## Unattended Device Safety Rule
+Mirage Host may remain installed and running. Xcode and QuickTime do not need to remain open after installation.
 
-Before starting or restarting the XCTest portal, confirm that Alvin currently has physical access to the iPhone. Starting `xcodebuild test`, WebDriverAgent, XCUITest, or the portal runner can present an iPhone prompt that requires physical confirmation.
+## One-time installation or rebuild
 
-If Alvin does not have physical access:
-
-- Do not start or restart `local.ios-portal.runner`.
-- Do not run `xcodebuild test`, WebDriverAgent, or `pymobiledevice3 developer dvt xcuitest`.
-- Do not reset the device's accessibility settings.
-- For Expo Go recovery and screenshots, use the paired-device DVT path below. It does not start XCUITest and did not present the UI Automation prompt during the July 2026 recovery.
-
-Incident lesson from 2026-07-14: an agent stopped the existing Expo/portal flow, attempted an XCTest-based restart, and incorrectly concluded that recovery required touching the phone. The paired-device DVT launch documented below recovered Expo Go without physical access. Treat it as the first-line recovery path for an unattended iPhone; do not repeat the XCTest restart first.
-
-## Quick Health Check
-
-First check whether the portal is already running:
+Run this while Alvin is physically present, the iPhone is unlocked and trusted, and **Settings > Developer > Enable UI Automation** is on:
 
 ```bash
-curl -fsS http://127.0.0.1:16643/device/date
+cd /Users/alvin/Documents/Personal/Dev/mobile/ios-portal
+./scripts/install-launch-agent.zsh
 ```
 
-If this returns JSON, keep using the running server. You can also check the launchd jobs:
+The installer performs a signed `build-for-testing` with the pinned Xcode and device, installs the LaunchAgent, and starts the supervisor. Approve any trust or UI Automation prompt on the iPhone. The unattended supervisor subsequently uses only `test-without-building`; it does not silently renew or replace signing assets.
+
+Re-run the installer after portal code changes, after renewing Personal Team profiles, or when changing the qualified Xcode version. A successful generic build is not enough—the installer must successfully build for this UDID.
+
+## Normal health check
+
+The status file explains whether the portal is healthy, disconnected, restarting, or blocked by signing:
 
 ```bash
-launchctl list | rg 'local\.ios-portal'
-lsof -nP -iTCP:16643 -sTCP:LISTEN
+jq . "$HOME/Library/Application Support/ios-portal/status.json"
+curl -fsS http://127.0.0.1:16643/health | jq .
+launchctl print "gui/$(id -u)/com.alvin.ios-portal.supervisor"
 ```
 
-If the portal is not running and the device is unattended, stop here. Do not start it merely to reopen Expo Go; use the recovery procedure below.
+Healthy service state requires all of the following:
 
-## Provisioning Profile Expiry And Renewal
+- `status.json` has `phase: "healthy"`.
+- `/health` returns `status` as `ready` or `busy`, a non-empty `sessionId`, and the pinned server session metadata.
+- The recorded `runnerPid` and `iproxyPid` belong to the supervisor.
+- The device is still listed by `idevice_id -l` with the exact UDID.
 
-This portal currently uses Alvin's free Apple **Personal Team** (`LR636MVRF3`). Apple fixes Personal Team App IDs, device registrations, and provisioning profiles to a **7-day lifetime**. A profile cannot be extended indefinitely; the app and XCTest runner must be reprovisioned, rebuilt, and reinstalled after expiration. A paid Apple Developer Program team normally reduces this maintenance to roughly annual renewal, but its development profiles still expire.
+The supervisor takes `caffeinate -is` assertions while the XCTest runner is alive, checks USB and HTTP health every 15 seconds, and restarts its own children after three consecutive health failures. Restart delay backs off from 5 to 120 seconds. It never kills an unrelated Xcode, Mirage, or USB process.
 
-Apple references:
-
-- [Developer account overview](https://developer.apple.com/help/account/basics/about-your-developer-account/)
-- [Inside Code Signing: Provisioning Profiles](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)
-
-Do not mistake an expired profile for a broken USB connection or a disabled UI Automation toggle. Common expiry symptoms include:
-
-- `No Accounts: Add a new account in Accounts settings.` even though Xcode's Apple Accounts screen still lists the account.
-- `No profiles for 'com.alvin.mobilerun-ios-portal' were found`.
-- `No profiles for 'com.alvin.mobilerun-ios-portalUITests.xctrunner' were found`.
-- `Provisioning profile ... doesn't include the currently selected device`.
-- `A valid provisioning profile for this executable was not found` while installing `Droidrun-Runner`.
-
-Before renewal, follow the unattended-device safety rule above and confirm that Alvin can touch the iPhone. The rebuild or XCTest launch can show an `Enable UI Automation` prompt.
-
-### Inspect The Current Expiration Dates
-
-Xcode 26 stores its current profiles under `~/Library/Developer/Xcode/UserData/Provisioning Profiles`. This command prints the portal-related application identifiers and expiration dates without changing them:
+Each health attempt is appended as JSON Lines evidence. Summarize all samples, or
+only samples at and after an ISO-8601 soak start time, with:
 
 ```bash
-for profile_path in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.mobileprovision; do
-  profile_plist=$(mktemp)
-  if ! security cms -D -i "$profile_path" > "$profile_plist" 2>/dev/null; then
-    rm "$profile_plist"
-    continue
-  fi
-  application_id=$(/usr/libexec/PlistBuddy \
-    -c 'Print :Entitlements:application-identifier' \
-    "$profile_plist" 2>/dev/null || true)
-
-  if [[ "$application_id" == *mobilerun-ios-portal* ]]; then
-    printf '%s\n' "$application_id"
-    /usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$profile_plist"
-  fi
-
-  rm "$profile_plist"
-done
+cd /Users/alvin/Documents/Personal/Dev/mobile/ios-portal
+./scripts/soak-report.zsh
+./scripts/soak-report.zsh 2026-07-19T03:00:00Z
 ```
 
-There should be three current profiles:
+## Required UI Automation self-test
+
+Service health proves that the runner is reachable. Actual UI Automation is accepted only after a real app activation, accessibility query, and screenshot all succeed:
+
+```bash
+cd /Users/alvin/Documents/Personal/Dev/mobile/ios-portal
+./scripts/self-test.zsh
+```
+
+The versioned self-test also exercises tap, focused typing, navigation, back,
+scrolling, and concurrent-request rejection. Its evidence directory is printed at
+the end. For a short manual confirmation, run:
+
+```bash
+BASE=http://127.0.0.1:16643
+STATE=/tmp/ios-portal-iphone7-state.json
+SHOT=/tmp/ios-portal-iphone7-screenshot.png
+
+curl -fsS "$BASE/health" | jq .
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -d '{"bundleIdentifier":"com.alvin.mobilerun-ios-portal"}' \
+  "$BASE/inputs/launch" | jq .
+curl -fsS "$BASE/state" -o "$STATE"
+curl -fsS "$BASE/vision/screenshot" -o "$SHOT"
+
+jq -e '
+  (.a11y_tree | contains("fixture.title")) and
+  (.a11y_tree | contains("Welcome to Droidrun!")) and
+  (.device_context.screen_bounds.width == 375) and
+  (.device_context.screen_bounds.height == 667)
+' "$STATE"
+sips -g pixelWidth -g pixelHeight "$SHOT"
+file "$SHOT"
+```
+
+On this iPhone the screenshot must be a valid `750 x 1334` PNG. A USB connection, a visible app, `/health`, or `/device/date` by itself is insufficient proof. HTTP 409 means another operation is active; wait for it. HTTP 503 means XCTest could not perform the operation; do not reinterpret it as success.
+
+## Supervisor behavior and recovery
+
+The service has one owner and one recovery loop:
+
+1. Verify the three required signing profiles exist and have not expired.
+2. Observe the exact physical UDID three consecutive times.
+3. Start the prebuilt XCTest bundle and fixed USB port forwarder.
+4. Wait up to 180 seconds for `/health`.
+5. Monitor the runner, forwarder, USB device, profiles, and health endpoint.
+6. Restart both owned child processes when the session becomes unhealthy.
+
+Read status and logs before intervening:
+
+```bash
+jq . "$HOME/Library/Application Support/ios-portal/status.json"
+tail -n 100 "$HOME/Library/Logs/ios-portal/supervisor.log"
+tail -n 150 "$HOME/Library/Logs/ios-portal/xcodebuild.log"
+tail -n 100 "$HOME/Library/Logs/ios-portal/iproxy.log"
+```
+
+The expected failure states are explicit:
+
+- `disconnected`: restore the qualified physical cable and port; the supervisor waits for three stable observations.
+- `blocked_signing`: Alvin must be present to renew and rebuild. No unsigned or alternate runner is attempted.
+- `restarting`: inspect `lastError` and the matching logs. Backoff is in progress.
+- `degraded`: one or two health checks failed; the third consecutive failure triggers a restart.
+- `blocked`: a dependency, repository, or single-owner invariant is broken.
+
+If UI Automation is disabled or iOS presents a confirmation prompt, the portal remains unavailable until somebody can touch the iPhone. There is intentionally no unattended fallback.
+
+## Signing lifecycle
+
+This project uses Alvin's free Personal Team `LR636MVRF3`, so the portal app and XCTest runner profiles expire after roughly seven days. The supervisor requires all three application identifiers and hard-stops at the earliest expiry:
 
 - `LR636MVRF3.com.alvin.mobilerun-ios-portal`
 - `LR636MVRF3.com.alvin.mobilerun-ios-portalUITests`
 - `LR636MVRF3.com.alvin.mobilerun-ios-portalUITests.xctrunner`
 
-### Renew Expired Personal Team Profiles
-
-The following recovery was verified on 2026-07-18:
-
-1. Open `/Applications/Xcode_26.2.app`, then open **Settings > Apple Accounts**.
-2. Select `Muhammad Alvin Abyan` (`alvin_sfb@yahoo.com`), select **Personal Team**, and click **Download Manual Profiles**.
-3. Open `droidrun-ios-portal.xcodeproj` in Xcode 26.2. Confirm that both **Droidrun Portal** and **Droidrun Server** use `Muhammad Alvin Abyan (Personal Team)` with automatic signing.
-4. If Xcode asks to trust the `FlyingFoxMacros` package, obtain Alvin's explicit approval before clicking **Trust & Enable**. The normal background command uses `-skipMacroValidation`, but the Xcode GUI needs the package enabled to perform this one-time renewal build.
-5. Set the run destination to **Alvin's iPhone 7**, choose **Product > Test**, and approve any prompt on the iPhone. A GUI test build is important because it generates the third `...UITests.xctrunner` profile; downloading manual profiles alone may generate only the app and UI-test target profiles.
-6. Re-run the expiration inspection command and confirm that all three profiles now have future dates.
-7. Stop the GUI test. If a GUI-debug test made `/device/date` work but caused `/state` or `/vision/screenshot` to hang, do not treat that as a device failure; restart with the background launchd runner in **Start The Portal** below.
-8. Run the complete **Reconfirm UI Automation End To End** check. Renewal is not complete until launch, accessibility-tree, and screenshot checks all pass.
-
-On 2026-07-18, the renewed Personal Team profiles were valid through 2026-07-25. Expect the same seven-day cycle unless the project is moved to a paid development team.
-
-## Reconfirm UI Automation End To End
-
-Do not treat the iOS toggle, a paired USB connection, or a running `xcodebuild` process as sufficient proof. Access is confirmed only after the portal performs an application launch, returns an accessibility tree, and captures the device screen.
-
-Run this while the portal is already healthy, or immediately after Alvin physically approves any iPhone prompt during portal startup:
+Inspect their current expiry without changing anything:
 
 ```bash
-BASE=http://127.0.0.1:16643
-
-curl -fsS "$BASE/device/date"
-
-curl -fsS \
-  -H 'Content-Type: application/json' \
-  -d '{"bundleIdentifier":"com.alvin.mobilerun-ios-portal"}' \
-  "$BASE/inputs/launch"
-
-curl -fsS "$BASE/state" -o /tmp/ios-portal-ui-automation-state.json
-curl -fsS "$BASE/vision/screenshot" -o /tmp/ios-portal-ui-automation-confirmed.png
-
-file /tmp/ios-portal-ui-automation-state.json
-file /tmp/ios-portal-ui-automation-confirmed.png
-```
-
-UI Automation is confirmed only when all of these are true:
-
-- `/device/date` returns JSON.
-- `/inputs/launch` reports that it opened `com.alvin.mobilerun-ios-portal`.
-- `/state` contains the Droidrun Portal accessibility tree and `Welcome to Droidrun!`.
-- The screenshot is a valid `750 x 1334` PNG showing the Droidrun Portal screen.
-
-This complete check passed on the physical iPhone 7 on 2026-07-18 after renewing all three Personal Team profiles. After the earlier 2026-07-15 verification, Expo Go was restored with the DVT recovery command in this document and the portal screenshot endpoint captured the signed-in Okami Home screen.
-
-Important: `/vision/screenshot` captures the actual foreground screen, but `/state` is scoped to the Droidrun Portal target application and may continue reporting its tree while Expo Go is in front. Do not interpret that difference as failed UI Automation or a failed Expo launch.
-
-## Recover Expo Go Without Physical Access
-
-Use this when the portal or Expo Go was stopped and nobody can touch the iPhone. This is the known-good recovery path for `okm-app` on the Raspberry Pi.
-
-### 1. Stop portal components that may relaunch XCUITest
-
-```bash
-launchctl remove local.ios-portal.runner 2>/dev/null || true
-launchctl remove local.ios-portal.iproxy 2>/dev/null || true
-lsof -tiTCP:16643 -sTCP:LISTEN | xargs -r kill
-```
-
-Confirm that no portal test process remains:
-
-```bash
-ps aux | rg 'xcodebuild test|DroidrunPortalServer|WebDriverAgent' | rg -v 'rg '
-```
-
-An empty result is expected.
-
-### 2. Verify the paired device and the Pi services
-
-```bash
-UDID=52181a4873864c3323d52b4bc0c87d3068617f31
-
-idevice_id -l
-ideviceinfo -u "$UDID" -k ProductVersion
-
-ssh alvin@raspberry-pi 'curl -fsS http://127.0.0.1:8081/status && echo'
-ssh alvin@raspberry-pi 'curl -fsS http://127.0.0.1:54321/auth/v1/health && echo'
-```
-
-Expected results are the iPhone UDID, its iOS version, `packager-status:running`, and a GoTrue health response.
-
-### 3. Find or prepare `pymobiledevice3`
-
-Prefer an existing installation. The July 2026 recovery used this temporary virtual environment:
-
-```bash
-PMD3=/private/tmp/okm-pmd3-venv/bin/pymobiledevice3
-```
-
-If it no longer exists, recreate it without changing the project:
-
-```bash
-python3 -m venv /private/tmp/okm-pmd3-venv
-/private/tmp/okm-pmd3-venv/bin/python -m pip install pymobiledevice3
-PMD3=/private/tmp/okm-pmd3-venv/bin/pymobiledevice3
-```
-
-### 4. Launch Expo Go directly into the Pi bundle
-
-The Pi's Tailscale address used by Expo is `100.76.99.124`. Keep the application identifier and its arguments together as one quoted positional argument:
-
-```bash
-"$PMD3" developer dvt launch \
-  --udid "$UDID" \
-  'host.exp.Exponent --initialUrl exp://100.76.99.124:8081'
-```
-
-This is the critical recovery command. Do not substitute the portal's `/inputs/launch` endpoint or an XCUITest launch when the device is unattended.
-
-Wait for Metro to finish bundling, then confirm that Expo Go remains alive:
-
-```bash
-sleep 15
-"$PMD3" developer dvt process-id-for-bundle-id \
-  --udid "$UDID" \
-  host.exp.Exponent
-```
-
-A numeric PID means Expo Go is running.
-
-### 5. Clear a leftover Accessibility Inspector highlight
-
-A translucent green rectangle is not an app defect. It is the Accessibility Audit inspector's `show visuals` overlay, which can remain on the iPhone after an interrupted inspection session. Turn off only the inspector overlay and monitoring session; do not call `reset_settings()`.
-
-```bash
-"$(dirname "$PMD3")/python" - <<'PY'
-import asyncio
-
-from pymobiledevice3.lockdown import create_using_usbmux
-from pymobiledevice3.services.accessibilityaudit import AccessibilityAudit
-
-UDID = "52181a4873864c3323d52b4bc0c87d3068617f31"
-
-
-async def main():
-    lockdown = await create_using_usbmux(serial=UDID)
-    try:
-        async with AccessibilityAudit(lockdown) as audit:
-            await audit.set_show_visuals(False)
-            await audit.set_app_monitoring_enabled(False)
-            await audit.set_monitored_event_type(None)
-    finally:
-        await lockdown.close()
-
-
-asyncio.run(main())
-PY
-```
-
-### 6. Capture and verify the recovered screen
-
-```bash
-mkdir -p /tmp/okm-iphone7-recovery
-idevicescreenshot \
-  -u "$UDID" \
-  /tmp/okm-iphone7-recovery/home.png
-file /tmp/okm-iphone7-recovery/home.png
-```
-
-Open the PNG and verify all of the following before reporting recovery:
-
-- There is no `Enable UI Automation` or Touch ID prompt.
-- Expo Go shows the Okami app rather than its project list.
-- The signed-in Home screen finishes loading.
-- No green inspector rectangle covers the UI.
-
-If the raw screenshot contains stale or missing compositor layers, use QuickTime Player as a read-only visual check: choose **File > New Movie Recording**, select **Alvin's iPhone 7** as the capture source, do not start recording, and close the preview after verification.
-
-### Optional: scroll for screenshots without pressing app controls
-
-Accessibility Audit focus traversal can scroll a React Native `ScrollView` to off-screen elements without activating buttons. Keep inspector visuals off, stop on the desired caption, and always disable monitoring afterward. Never call `perform_press()` or `reset_settings()` during unattended recovery.
-
-This technique was used to capture the `Seven-round pulse`, `Resume`, and `Quick start` sections after Expo Go was recovered. It changes only the current scroll position; relaunch the same Expo URL afterward to leave Home at the top.
-
-## Start The Portal
-
-Run these commands from any shell on the Mac:
-
-```bash
-cd /Users/alvin/Documents/Personal/Dev/mobile/ios-portal
-
-launchctl remove local.ios-portal.runner 2>/dev/null || true
-launchctl remove local.ios-portal.iproxy 2>/dev/null || true
-lsof -tiTCP:16643 -sTCP:LISTEN | xargs -r kill
-
-launchctl submit \
-  -l local.ios-portal.runner \
-  -o /tmp/ios-portal-device-xcodebuild.out \
-  -e /tmp/ios-portal-device-xcodebuild.err \
-  -- /bin/zsh -lc 'cd /Users/alvin/Documents/Personal/Dev/mobile/ios-portal && env DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer xcodebuild test -skipMacroValidation -allowProvisioningUpdates -allowProvisioningDeviceRegistration -project droidrun-ios-portal.xcodeproj -scheme droidrun-ios-portal -destination "platform=iOS,id=52181a4873864c3323d52b4bc0c87d3068617f31" "-only-testing:Droidrun Server/DroidrunPortalServer/testLoop"'
-
-launchctl submit \
-  -l local.ios-portal.iproxy \
-  -o /tmp/ios-portal-iproxy.out \
-  -e /tmp/ios-portal-iproxy.err \
-  -- /opt/homebrew/bin/iproxy 16643 6643 -u 52181a4873864c3323d52b4bc0c87d3068617f31
-```
-
-Wait until the API responds:
-
-```bash
-for i in {1..90}; do
-  if curl -fsS --max-time 3 http://127.0.0.1:16643/device/date; then
-    echo
-    break
+for profile in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.mobileprovision; do
+  decoded=$(security cms -D -i "$profile" 2>/dev/null) || continue
+  identifier=$(printf '%s' "$decoded" | plutil \
+    -extract Entitlements.application-identifier raw -o - - 2>/dev/null) || continue
+  if [[ "$identifier" == *mobilerun-ios-portal* ]]; then
+    expiration=$(printf '%s' "$decoded" | plutil \
+      -extract ExpirationDate raw -o - -)
+    printf '%s\t%s\n' "$identifier" "$expiration"
   fi
-  sleep 2
 done
 ```
 
-The XCTest process is intentionally long-running. It starts the HTTP server in test setup and keeps the run loop alive.
+To renew, Alvin must be present:
 
-## Self-Test
+1. Open Xcode 26.2 **Settings > Accounts** and select the Personal Team.
+2. Download profiles and ensure both targets use automatic signing with that team.
+3. Run `./scripts/install-launch-agent.zsh` and approve any iPhone prompt.
+4. Confirm the three new expiry dates.
+5. Run the complete UI Automation self-test above.
 
-Use these checks after starting the portal, or after code changes that affect the API:
+The supervisor warns in its log during the final 24 hours. It does not claim that free signing can provide more than the profile lifetime.
+
+## Start, restart, and stop
+
+Start or force a supervised restart:
 
 ```bash
-curl -fsS http://127.0.0.1:16643/device/date
-
-curl -fsS \
-  -H 'Content-Type: application/json' \
-  -d '{"bundleIdentifier":"com.alvin.mobilerun-ios-portal"}' \
-  http://127.0.0.1:16643/inputs/launch
-
-curl -fsS http://127.0.0.1:16643/state | head -c 1200
-
-curl -fsS http://127.0.0.1:16643/vision/screenshot \
-  -o /tmp/ios-portal-iphone7-screenshot.png
-
-file /tmp/ios-portal-iphone7-screenshot.png
+launchctl kickstart -k "gui/$(id -u)/com.alvin.ios-portal.supervisor"
 ```
 
-Expected signs of success:
-
-- `/device/date` returns JSON with a `date`.
-- `/inputs/launch` returns `{"message":"opened com.alvin.mobilerun-ios-portal"}`.
-- `/state` shows the portal app, usually with `Welcome to Droidrun!`.
-- The screenshot is a valid PNG. On this iPhone 7 it is normally `750 x 1334`.
-
-## Foreground Alternative
-
-If launchd is not appropriate, use two foreground terminals.
-
-Terminal 1:
+Stop it without deleting logs, results, status, or builds:
 
 ```bash
 cd /Users/alvin/Documents/Personal/Dev/mobile/ios-portal
-DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer \
-  xcodebuild test \
-  -skipMacroValidation \
-  -allowProvisioningUpdates \
-  -allowProvisioningDeviceRegistration \
-  -project droidrun-ios-portal.xcodeproj \
-  -scheme droidrun-ios-portal \
-  -destination 'platform=iOS,id=52181a4873864c3323d52b4bc0c87d3068617f31' \
-  '-only-testing:Droidrun Server/DroidrunPortalServer/testLoop'
+./scripts/uninstall-launch-agent.zsh
 ```
 
-Terminal 2:
+Install again with the one-time installation command. Do not run a second foreground `xcodebuild test` or `iproxy` beside the supervisor; concurrent owners make results ambiguous and cause port conflicts.
 
-```bash
-/opt/homebrew/bin/iproxy 16643 6643 -u 52181a4873864c3323d52b4bc0c87d3068617f31
-```
+## Cable, port, and Xcode qualification
 
-Then use `http://127.0.0.1:16643`.
+When flakiness returns, qualify one variable at a time while Alvin is present:
 
-## Stop The Portal
+1. Stop the LaunchAgent.
+2. Connect the iPhone directly to the Mac—no hub or display passthrough.
+3. Record the exact cable and Mac port.
+4. Install and run the full UI Automation self-test.
+5. Hold the same configuration for a transport soak and search the system log for `usbmuxd` disconnects.
+6. Repeat with the alternate cable or port.
+7. Keep only the configuration with zero unexpected disconnects and a continuously healthy portal.
 
-```bash
-launchctl remove local.ios-portal.runner 2>/dev/null || true
-launchctl remove local.ios-portal.iproxy 2>/dev/null || true
-lsof -tiTCP:16643 -sTCP:LISTEN | xargs -r kill
-```
+The current pinned Xcode is 26.2. On 2026-07-19, Xcode 26.6 completed a signed physical-device `build-for-testing` but its matching `test-without-building` rejected `Droidrun Server` as unsupported logic testing on the iPhone 7. It is therefore unqualified and must not replace 26.2. Merely being the default `xcode-select` version or passing a build does not qualify a toolchain.
 
-If a foreground `xcodebuild test` is running, stop it with `Ctrl-C`. Xcode may report `TEST INTERRUPTED`; that is expected when stopping this long-running server.
+## Mac login limitation
 
-## Troubleshooting
-
-- `Macro "Plugins" ... must be enabled`: rerun with `-skipMacroValidation`.
-- Provisioning profile errors: follow **Provisioning Profile Expiry And Renewal** above. Personal Team profiles expire after seven days, and `-allowProvisioningUpdates -allowProvisioningDeviceRegistration` cannot recover every missing XCTest runner profile from the command line.
-- `Unknown build action 'Server/DroidrunPortalServer/testLoop'`: the `-only-testing` argument was split incorrectly. Quote the full argument exactly as `"-only-testing:Droidrun Server/DroidrunPortalServer/testLoop"`.
-- `curl: Failed to connect` or `iproxy` says `Connection refused`: the XCTest server is not ready or has stopped. Check `/tmp/ios-portal-device-xcodebuild.err` and `/tmp/ios-portal-device-xcodebuild.out`, then restart both launchd jobs.
-- Port conflict on `16643`: stop any old forwarder with `lsof -tiTCP:16643 -sTCP:LISTEN | xargs -r kill`.
-- Device launch hangs: unlock the iPhone, confirm it trusts the Mac, and confirm UI Automation remains enabled.
-
-## Build-Only Check
-
-Use this when you only need to verify compilation/signing:
-
-```bash
-cd /Users/alvin/Documents/Personal/Dev/mobile/ios-portal
-DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer \
-  xcodebuild build \
-  -skipMacroValidation \
-  -allowProvisioningUpdates \
-  -allowProvisioningDeviceRegistration \
-  -project droidrun-ios-portal.xcodeproj \
-  -scheme droidrun-ios-portal \
-  -destination 'platform=iOS,id=52181a4873864c3323d52b4bc0c87d3068617f31'
-```
+FileVault is enabled and automatic login is unavailable. After a full Mac reboot, a person must unlock and log into the Mac before this per-user LaunchAgent can run. Once logged in, the supervisor starts automatically. This is an explicit availability boundary, not something the portal can bypass.

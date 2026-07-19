@@ -100,7 +100,8 @@ struct FocusedElement: Codable {
     let resourceId: String
 }
 
-final class DroidrunPortalTools: XCTestCase {
+@MainActor
+final class DroidrunPortalTools {
     var app: XCUIApplication?
     var bundleIdentifier: String?
 
@@ -120,7 +121,6 @@ final class DroidrunPortalTools: XCTestCase {
         return trimmed.range(of: pattern, options: .regularExpression) != nil
     }
 
-    @MainActor
     private func currentPackageName() -> String {
         if bundleIdentifier == "com.apple.springboard" {
             return "com.apple.springboard"
@@ -128,7 +128,6 @@ final class DroidrunPortalTools: XCTestCase {
         return bundleIdentifier ?? ""
     }
 
-    @MainActor
     private func currentAppName() -> String {
         guard let app else {
             return ""
@@ -158,61 +157,29 @@ final class DroidrunPortalTools: XCTestCase {
         return ""
     }
 
-    private func fallbackScreenBounds() -> CGRect {
-        CGRect(x: 0, y: 0, width: 430, height: 932)
-    }
-
     // MARK: - State
 
-    @MainActor
     func fetchStateFull() throws -> StateFullResponse {
         guard let app else {
-            let screen = fallbackScreenBounds()
-            return StateFullResponse(
-                a11y_tree: "",
-                phone_state: StateFullPhoneState(
-                    currentApp: "Unknown",
-                    packageName: "",
-                    keyboardVisible: false,
-                    isEditable: false,
-                    focusedElement: nil
-                ),
-                device_context: DeviceContext(
-                    screen_bounds: ScreenBounds(width: screen.width, height: screen.height)
-                )
-            )
+            throw Error.noAppFound
         }
 
-        let a11yTree: String
-        do {
-            a11yTree = try fetchAccessibilityTree()
-        } catch {
-            let screen = fallbackScreenBounds()
-            return StateFullResponse(
-                a11y_tree: "",
-                phone_state: StateFullPhoneState(
-                    currentApp: currentAppName(),
-                    packageName: currentPackageName(),
-                    keyboardVisible: false,
-                    isEditable: false,
-                    focusedElement: nil
-                ),
-                device_context: DeviceContext(
-                    screen_bounds: ScreenBounds(width: screen.width, height: screen.height)
-                )
-            )
-        }
+        let a11yTree = try fetchAccessibilityTree()
 
-        // Guard window frame query — this is the main source of
-        // kAXErrorServerNotFound failures that accumulate and eventually
-        // cause xcodebuild to kill the test runner.
         let window = app.windows.element(boundBy: 0)
-        var frame = fallbackScreenBounds()
-        if window.waitForExistence(timeout: 3) {
-            let wf = window.frame
-            if wf.width > 0 && wf.height > 0 {
-                frame = wf
-            }
+        guard window.waitForExistence(timeout: 3) else {
+            throw Error.invalidTool(
+                name: "fetchStateFull",
+                message: "The target application window is unavailable."
+            )
+        }
+
+        let frame = window.frame
+        guard frame.width > 0, frame.height > 0 else {
+            throw Error.invalidTool(
+                name: "fetchStateFull",
+                message: "The target application returned invalid screen bounds."
+            )
         }
 
         let currentApp = currentAppName()
@@ -242,7 +209,6 @@ final class DroidrunPortalTools: XCTestCase {
         )
     }
 
-    @MainActor
     private func findFocusedElement() -> FocusedElement? {
         guard let app else { return nil }
         let focused = app.descendants(matching: .any)
@@ -279,19 +245,36 @@ final class DroidrunPortalTools: XCTestCase {
 
     // MARK: - App management
 
-    @MainActor
     func openApp(bundleIdentifier: String) throws {
         if bundleIdentifier == self.bundleIdentifier, app != nil {
             app?.activate()
+            guard app?.wait(for: .runningForeground, timeout: 10) == true else {
+                throw Error.invalidTool(
+                    name: "openApp",
+                    message: "The target application did not reach the foreground."
+                )
+            }
             return
         }
 
         let app = XCUIApplication(bundleIdentifier: bundleIdentifier)
 
-        if bundleIdentifier == "com.apple.springboard" {
-            app.activate() // Avoid relaunching springboard since that locks the phone
-        } else {
-            app.launch()
+        // activate() starts an app that is not running without first forcing a
+        // termination.  Forced termination is unreliable on older physical
+        // devices and records an XCTest failure that kills the portal server.
+        app.activate()
+
+        guard app.wait(for: .runningForeground, timeout: 10) else {
+            throw Error.invalidTool(
+                name: "openApp",
+                message: "The target application did not reach the foreground."
+            )
+        }
+        guard app.windows.element(boundBy: 0).waitForExistence(timeout: 10) else {
+            throw Error.invalidTool(
+                name: "openApp",
+                message: "The target application reached the foreground without an accessible window."
+            )
         }
 
         self.bundleIdentifier = bundleIdentifier
@@ -300,7 +283,6 @@ final class DroidrunPortalTools: XCTestCase {
 
     // MARK: - Accessibility
 
-    @MainActor
     func fetchAccessibilityTree() throws -> String {
         guard let app else {
             throw Error.noAppFound
@@ -319,12 +301,37 @@ final class DroidrunPortalTools: XCTestCase {
             )
         }
 
-        return app.accessibilityTree()
+        let tree = app.accessibilityTree()
+        guard !tree.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw Error.invalidTool(
+                name: "fetchAccessibilityTree",
+                message: "The target application returned an empty accessibility tree."
+            )
+        }
+        return tree
     }
 
     // MARK: - Gestures
 
-    @MainActor
+    private func screenFrame(for app: XCUIApplication, operation: String) throws -> CGRect {
+        let window = app.windows.element(boundBy: 0)
+        guard window.waitForExistence(timeout: 3) else {
+            throw Error.invalidTool(
+                name: operation,
+                message: "The target application window is unavailable."
+            )
+        }
+
+        let frame = window.frame
+        guard frame.width > 0, frame.height > 0 else {
+            throw Error.invalidTool(
+                name: operation,
+                message: "The target application returned invalid screen bounds."
+            )
+        }
+        return frame
+    }
+
     func tapElement(rect coordinateString: String, count: Int?, longPress: Bool?) throws {
         print("Tap \(coordinateString) \(count ?? 1) times long: \(longPress ?? false)")
         guard let app else {
@@ -332,6 +339,19 @@ final class DroidrunPortalTools: XCTestCase {
         }
         let coordinate = NSCoder.cgRect(for: coordinateString)
         let midPoint = CGPoint(x: coordinate.midX, y: coordinate.midY)
+        let screenFrame = try screenFrame(for: app, operation: "tapElement")
+        guard coordinate.width > 0,
+              coordinate.height > 0,
+              coordinate.origin.x.isFinite,
+              coordinate.origin.y.isFinite,
+              coordinate.width.isFinite,
+              coordinate.height.isFinite,
+              screenFrame.contains(midPoint) else {
+            throw Error.invalidTool(
+                name: "tapElement",
+                message: "The tap rectangle is invalid or outside the physical screen bounds."
+            )
+        }
         let startCoordinate = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
         let targetCoordinate = startCoordinate.withOffset(CGVector(dx: midPoint.x, dy: midPoint.y))
         if longPress == true {
@@ -345,11 +365,27 @@ final class DroidrunPortalTools: XCTestCase {
         }
     }
 
-    @MainActor
     func swipe(x1: CGFloat, y1: CGFloat, x2: CGFloat, y2: CGFloat, duration: Double) throws {
         print("Swipe from (\(x1),\(y1)) to (\(x2),\(y2)) duration: \(duration)s")
         guard let app else {
             throw Error.noAppFound
+        }
+        let screenFrame = try screenFrame(for: app, operation: "swipe")
+        let startPoint = CGPoint(x: x1, y: y1)
+        let endPoint = CGPoint(x: x2, y: y2)
+        guard startPoint.x.isFinite,
+              startPoint.y.isFinite,
+              endPoint.x.isFinite,
+              endPoint.y.isFinite,
+              duration.isFinite,
+              duration >= 0.05,
+              duration <= 5,
+              screenFrame.contains(startPoint),
+              screenFrame.contains(endPoint) else {
+            throw Error.invalidTool(
+                name: "swipe",
+                message: "Swipe coordinates or duration are outside the supported physical-screen range."
+            )
         }
         let root = app.coordinate(withNormalizedOffset: .zero)
         let start = root.withOffset(CGVector(dx: x1, dy: y1))
@@ -359,7 +395,6 @@ final class DroidrunPortalTools: XCTestCase {
 
     // MARK: - Text input
 
-    @MainActor
     @discardableResult
     private func clearText(rect: String? = nil, timeout: TimeInterval = 30) throws -> Int {
         print("Clear text \(rect ?? "<focused>") timeout: \(timeout)s")
@@ -386,8 +421,10 @@ final class DroidrunPortalTools: XCTestCase {
         while true {
             let elapsed = CFAbsoluteTimeGetCurrent() - startTime
             if elapsed > timeout {
-                print("Clear timed out after \(String(format: "%.1f", elapsed))s")
-                break
+                throw Error.invalidTool(
+                    name: "clearText",
+                    message: "Text clearing timed out after \(String(format: "%.1f", elapsed)) seconds."
+                )
             }
 
             let currentValue = focusedElement.value as? String ?? ""
@@ -424,7 +461,7 @@ final class DroidrunPortalTools: XCTestCase {
             }
 
             print("No progress after fast + single delete, stopping")
-            break
+            throw Error.invalidTool(name: "clearText", message: "The focused element did not accept deletion.")
         }
 
         let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
@@ -432,7 +469,6 @@ final class DroidrunPortalTools: XCTestCase {
         return totalDeleted
     }
 
-    @MainActor
     func enterText(rect: String? = nil, text: String, clear: Bool = false) async throws {
         print("Enter Text \(rect ?? "<focused>") -> \(text.prefix(50))... (\(text.count) chars)")
         guard let app else {
@@ -454,6 +490,8 @@ final class DroidrunPortalTools: XCTestCase {
             throw Error.invalidTool(name: "enterText", message: "No element has keyboard focus.")
         }
 
+        let valueBeforeTyping = focused.value as? String ?? ""
+
         let chunkSize = 100
         var offset = text.startIndex
         while offset < text.endIndex {
@@ -461,11 +499,30 @@ final class DroidrunPortalTools: XCTestCase {
             app.typeText(String(text[offset..<end]))
             offset = end
         }
+
+        let verificationDeadline = CFAbsoluteTimeGetCurrent() + 3
+        var valueAfterTyping = focused.value as? String ?? ""
+        while CFAbsoluteTimeGetCurrent() < verificationDeadline {
+            let verified = clear
+                ? valueAfterTyping == text
+                : (text.isEmpty || (valueAfterTyping != valueBeforeTyping && valueAfterTyping.contains(text)))
+            if verified {
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            valueAfterTyping = focused.value as? String ?? ""
+        }
+
+        throw Error.invalidTool(
+            name: "enterText",
+            message: clear
+                ? "The focused element value did not exactly match the requested replacement text."
+                : "The focused element did not contain the requested text after typing."
+        )
     }
 
     // MARK: - Device
 
-    @MainActor
     func pressKey(key portalKey: PortalHardwareKey) throws {
         guard let button = portalKey.button else {
             throw Error.unsupportedKey(
@@ -477,6 +534,8 @@ final class DroidrunPortalTools: XCTestCase {
         if portalKey == .home {
             print("Press Key \(button)")
             XCUIDevice.shared.press(button)
+            bundleIdentifier = "com.apple.springboard"
+            app = XCUIApplication(bundleIdentifier: "com.apple.springboard")
             return
         }
 
@@ -493,10 +552,13 @@ final class DroidrunPortalTools: XCTestCase {
         XCUIDevice.shared.press(button)
     }
 
-    @MainActor
     func takeScreenshot() throws -> Data {
         let snapshot = XCUIScreen.main.screenshot()
-        return snapshot.pngRepresentation
+        let data = snapshot.pngRepresentation
+        guard !data.isEmpty else {
+            throw Error.invalidTool(name: "takeScreenshot", message: "XCTest returned an empty screenshot.")
+        }
+        return data
     }
 
     func getDate() -> String {
@@ -505,7 +567,6 @@ final class DroidrunPortalTools: XCTestCase {
         return formatter.string(from: Date())
     }
 
-    @MainActor
     func back() throws {
         guard let app = self.app else {
             throw Error.noAppFound
@@ -516,14 +577,13 @@ final class DroidrunPortalTools: XCTestCase {
             backButton.tap()
             return
         }
-        let window = app.windows.element(boundBy: 0)
-        if window.exists {
-            let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5))
-            let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            print("Performing right-edge swipe gesture for back navigation")
-            start.press(forDuration: 0.1, thenDragTo: end)
-            return
-        }
-        throw Error.invalidTool(name: "back", message: "No back navigation available.")
+        throw Error.invalidTool(
+            name: "back",
+            message: "No visible navigation-bar back button is available."
+        )
+    }
+
+    var currentBundleIdentifier: String {
+        currentPackageName()
     }
 }

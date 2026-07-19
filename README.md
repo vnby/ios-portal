@@ -38,6 +38,11 @@ The portal leverages iOS XCTest framework and XCUITest capabilities to:
 
 ### Device Information
 
+#### GET `/health`
+Returns the XCTest server session, uptime, active-operation state, and most recent
+automation result. Supervisors should use this endpoint for liveness and treat
+`busy` as healthy rather than starting a concurrent request.
+
 #### GET `/`
 Returns basic device information and description.
 
@@ -214,6 +219,11 @@ Presses device hardware keys.
 2. The XCTest suite will automatically start the HTTP server on port 6643
 3. The server will continue running until the test session ends
 
+For Alvin's fixed physical iPhone 7 setup, use the fail-closed launchd workflow in
+[`LOCAL_IOS_PORTAL_HANDOFF.md`](./LOCAL_IOS_PORTAL_HANDOFF.md). That workflow pins
+the UDID, Xcode version, signing checks, and forwarded ports; it intentionally has
+no simulator or alternate automation fallback.
+
 ### Client Integration
 
 The portal is designed to work with automation agents that can:
@@ -317,7 +327,7 @@ class CompleteIOSTools(IOSTools):
         Args:
             text: Text to input. Can contain spaces, newlines, and special characters including non-ASCII.
             index: Element index to input text into (optional, -1 means use last tapped element)
-            clear: Whether to clear existing text before input (not currently supported for iOS)
+            clear: Whether to replace the existing text before input
 
         Returns:
             Result message
@@ -330,14 +340,11 @@ class CompleteIOSTools(IOSTools):
             if index >= 0:
                 await self.tap_by_index(index)
 
-            # Note: clear parameter is not currently supported by iOS portal API
-            # Future enhancement could add support for clearing text
-
             # Use the last tapped element's rect if available, otherwise use a default
             rect = self.last_tapped_rect if self.last_tapped_rect else "0,0,100,100"
 
             type_url = f"{self.url}/inputs/type"
-            payload = {"rect": rect, "text": text}
+            payload = {"rect": rect, "text": text, "clear": clear}
 
             response = requests.post(type_url, json=payload)
             if response.status_code == 200:
@@ -396,10 +403,7 @@ class CompleteIOSTools(IOSTools):
         return super().drag(start_x, start_y, end_x, end_y, duration_ms)
 
     async def back(self) -> str:
-        try:
-            return super().back()
-        except NotImplementedError:
-            return "Error: Back button is not supported on iOS"
+        return super().back()
 
     async def press_key(self, keycode: int) -> str:
         return super().press_key(keycode)
